@@ -106,6 +106,7 @@ public final class GetTCP extends AbstractProcessor {
         _propertyDescriptors.add(SERVER_ADDRESS);
         _propertyDescriptors.add(PORT);
         _propertyDescriptors.add(RECEIVE_BUFFER_SIZE);
+        _propertyDescriptors.add(KEEP_ALIVE);
 
 
         propertyDescriptors = Collections.unmodifiableList(_propertyDescriptors);
