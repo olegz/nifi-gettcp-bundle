@@ -242,7 +242,7 @@ public final class GetTCP extends AbstractProcessor {
                             final String message = charBuffer.toString();
                             log.debug("Received Message: {}", new Object[]{message});
                             socketMessagesReceived.offer(message);
-                            buf.flip();
+                            buf.clear();
                         }
                     }
                 }
