@@ -106,6 +106,7 @@ public final class GetTCP extends AbstractProcessor {
         _propertyDescriptors.add(SERVER_ADDRESS);
         _propertyDescriptors.add(PORT);
         _propertyDescriptors.add(RECEIVE_BUFFER_SIZE);
+        _propertyDescriptors.add(KEEP_ALIVE);
 
 
         propertyDescriptors = Collections.unmodifiableList(_propertyDescriptors);
@@ -120,8 +121,6 @@ public final class GetTCP extends AbstractProcessor {
     private SocketRecveiverThread socketRecveiverThread = null;
     private Future receiverThreadFuture = null;
     private ExecutorService executorService = Executors.newFixedThreadPool(1);
-    private ComponentLog log = getLogger();
-
 
     /**
      * Bounded queue of messages events from the socket.
@@ -150,7 +149,7 @@ public final class GetTCP extends AbstractProcessor {
             client.setOption(StandardSocketOptions.SO_RCVBUF,context.getProperty(RECEIVE_BUFFER_SIZE).asInteger());
             client.connect(inetSocketAddress);
             client.configureBlocking(false);
-            socketRecveiverThread = new SocketRecveiverThread(client,context.getProperty(RECEIVE_BUFFER_SIZE).asInteger());
+            socketRecveiverThread = new SocketRecveiverThread(client,context.getProperty(RECEIVE_BUFFER_SIZE).asInteger(),getLogger());
             if(executorService.isShutdown()){
                 executorService = Executors.newFixedThreadPool(1);
             }
@@ -171,7 +170,7 @@ public final class GetTCP extends AbstractProcessor {
                     executorService.shutdownNow();
 
                     if (!executorService.awaitTermination(5, TimeUnit.SECONDS))
-                        log.error("Executor service for receiver thread did not terminate");
+                        getLogger().error("Executor service for receiver thread did not terminate");
             }
             client.close();
         } catch (final Exception e) {
@@ -215,11 +214,12 @@ public final class GetTCP extends AbstractProcessor {
         private SocketChannel socketChannel = null;
         private boolean keepProcessing = true;
         private int bufferSize;
-        private ComponentLog log = getLogger();
+        private ComponentLog log;
 
-        SocketRecveiverThread(SocketChannel client, int bufferSize) {
+        SocketRecveiverThread(SocketChannel client, int bufferSize,ComponentLog log) {
             socketChannel = client;
             this.bufferSize = bufferSize;
+            this.log= log;
         }
 
         void stopProcessing(){
@@ -242,7 +242,7 @@ public final class GetTCP extends AbstractProcessor {
                             final String message = charBuffer.toString();
                             log.debug("Received Message: {}", new Object[]{message});
                             socketMessagesReceived.offer(message);
-                            buf.flip();
+                            buf.clear();
                         }
                     }
                 }
