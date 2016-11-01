@@ -198,7 +198,6 @@ public final class GetTCP extends AbstractProcessor {
         _relationships.add(REL_FAILURE);
         relationships = Collections.unmodifiableSet(_relationships);
     }
-
     private Map<SocketRecveiverThread, Future> socketToFuture = new HashMap<>();
     private ExecutorService executorService;
     private ComponentLog log = getLogger();
@@ -224,6 +223,7 @@ public final class GetTCP extends AbstractProcessor {
     @OnScheduled
     public void onScheduled(final ProcessContext context) throws ProcessException {
 
+
         final int rcvBufferSize = context.getProperty(RECEIVE_BUFFER_SIZE).asInteger();
         final boolean keepAlive = context.getProperty(KEEP_ALIVE).asBoolean();
         final int connectionTimeout = context.getProperty(CONNECTION_TIMEOUT).asTimePeriod(TimeUnit.SECONDS).intValue();
@@ -238,6 +238,7 @@ public final class GetTCP extends AbstractProcessor {
             final PropertyDescriptor descriptor = entry.getKey();
             if (descriptor.isDynamic()) {
                 dynamicAttributes.put(descriptor.getName(), entry.getValue());
+
             }
         }
 
