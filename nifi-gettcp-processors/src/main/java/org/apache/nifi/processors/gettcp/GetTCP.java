@@ -28,6 +28,7 @@ import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.components.Validator;
+import org.apache.nifi.expression.AttributeExpression;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
@@ -56,7 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @InputRequirement(InputRequirement.Requirement.INPUT_FORBIDDEN)
 @CapabilityDescription("Connects over TCP to the provided server. When receiving data this will writes either the" +
         " full receive buffer or messages based on demarcator to the content of a FlowFile. ")
-public final class GetTCP extends AbstractProcessor {
+public class GetTCP extends AbstractProcessor {
 
     private static final Validator ENDPOINT_VALIDATOR = new Validator() {
         @Override
@@ -69,12 +70,30 @@ public final class GetTCP extends AbstractProcessor {
             final String[] hostPortPairs = value.split(",");
             boolean validHostPortPairs = true;
             String reason = "";
+            String offendingSubject = subject;
+
+            if(0 == hostPortPairs.length){
+                return new ValidationResult.Builder().subject(subject).input(value).valid(false).explanation(offendingSubject + " cannot be empty").build();
+            }
             for (final String hostPortPair : hostPortPairs) {
+                offendingSubject = hostPortPair;
                 //split pair
-                final String[] parts = hostPortPair.split(":");
-                if (parts[0].isEmpty()) {
+                if (hostPortPair.isEmpty()) {
                     validHostPortPairs = false;
-                    reason = "host is empty";
+                    reason = "endpoint is empty";
+                    break;
+                }
+                if (!hostPortPair.contains(":")) {
+                    validHostPortPairs = false;
+                    reason = "endpoint pair does not contain valid delimiter";
+                    break;
+                }
+                final String[] parts = hostPortPair.split(":");
+
+                if (1 == parts.length) {
+                    validHostPortPairs = false;
+                    reason = "could not determine the port";
+                    break;
                 } else {
                     try {
                         final int intVal = Integer.parseInt(parts[1]);
@@ -82,10 +101,12 @@ public final class GetTCP extends AbstractProcessor {
                         if (intVal <= 0) {
                             reason = "not a positive value";
                             validHostPortPairs = false;
+                            break;
                         }
                     } catch (final NumberFormatException e) {
                         reason = "not a valid integer";
                         validHostPortPairs = false;
+                        break;
                     }
                 }
                 //if we already have a bad pair then exit now.
@@ -93,7 +114,7 @@ public final class GetTCP extends AbstractProcessor {
                     break;
                 }
             }
-            return new ValidationResult.Builder().subject(subject).input(value).explanation(reason).valid(validHostPortPairs).build();
+            return new ValidationResult.Builder().subject(offendingSubject).input(value).explanation(reason).valid(validHostPortPairs).build();
         }
     };
 
@@ -111,7 +132,7 @@ public final class GetTCP extends AbstractProcessor {
             .description("A failover server to connect to if one of the main ones is unreachable after the connection " +
                     "attempt count. The format should be <server_address>:<port>.")
             .required(false)
-           // .defaultValue("")
+            // .defaultValue("")
             .addValidator(ENDPOINT_VALIDATOR)
             .build();
 
@@ -173,7 +194,9 @@ public final class GetTCP extends AbstractProcessor {
     private final static Set<Relationship> relationships;
     private final static Charset charset = Charset.forName(StandardCharsets.UTF_8.name());
     private final Map<String, String> dynamicAttributes = new HashMap<>();
-    private AtomicBoolean connectedToBackup;
+    private volatile Set<String> dynamicPropertyNames = new HashSet<>();
+
+    private AtomicBoolean connectedToBackup = new AtomicBoolean();
 
 
     /*
@@ -198,6 +221,7 @@ public final class GetTCP extends AbstractProcessor {
         _relationships.add(REL_FAILURE);
         relationships = Collections.unmodifiableSet(_relationships);
     }
+
     private Map<SocketRecveiverThread, Future> socketToFuture = new HashMap<>();
     private ExecutorService executorService;
     private ComponentLog log = getLogger();
@@ -208,7 +232,7 @@ public final class GetTCP extends AbstractProcessor {
     /**
      * Bounded queue of messages events from the socket.
      */
-    private final BlockingQueue<String> socketMessagesReceived = new ArrayBlockingQueue<>(256);
+    protected final BlockingQueue<String> socketMessagesReceived = new ArrayBlockingQueue<>(256);
 
     @Override
     public Set<Relationship> getRelationships() {
@@ -219,6 +243,18 @@ public final class GetTCP extends AbstractProcessor {
     public final List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         return propertyDescriptors;
     }
+
+    @Override
+    protected PropertyDescriptor getSupportedDynamicPropertyDescriptor(final String propertyDescriptorName) {
+        return new PropertyDescriptor.Builder()
+                .required(false)
+                .name(propertyDescriptorName)
+                .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
+                .dynamic(true)
+                .expressionLanguageSupported(true)
+                .build();
+    }
+
 
     @OnScheduled
     public void onScheduled(final ProcessContext context) throws ProcessException {
@@ -251,32 +287,31 @@ public final class GetTCP extends AbstractProcessor {
 
             SocketRecveiverThread socketRecveiverThread = null;
             try {
-                socketRecveiverThread = new SocketRecveiverThread(hostAndPort[0],
-                        Integer.parseInt(hostAndPort[1]),backupServer, keepAlive, rcvBufferSize, connectionTimeout,connectionRetryCount);
+                socketRecveiverThread = createSocketRecveiverThread(rcvBufferSize, keepAlive, connectionTimeout, connectionRetryCount, hostAndPort);
             } catch (Exception ex) {
                 // Should we re-throw this or throw a ProcessException? If there is only one host in the list  and no backup
                 // then we should otherwise there will be no data and we cannot really run. For a single hosts / port
                 // pair it may make sense to throw as well and then perhaps provide a property to allow the user to decide
                 // if there are more than one servers in the list do we throw or just log it. For now will throw and
                 // treat it as an error.
+                log = getLogger();
                 log.error("Caught exception trying to create thread to process data from host: {}", new Object[]{hostAndPort[0], ex});
 
-                if(!connectedToBackup.get() && !backupServer.isEmpty()){
+                if (!connectedToBackup.get() && !backupServer.isEmpty()) {
                     log.error("Attempting connection to backup server: {}", new Object[]{backupServer});
                     try {
                         final String[] backupHostAndPort = backupServer.split(":");
-                        socketRecveiverThread = new SocketRecveiverThread(backupHostAndPort[0],
-                                Integer.parseInt(backupHostAndPort[1]),backupServer, keepAlive, rcvBufferSize, connectionTimeout,connectionRetryCount);
+                        socketRecveiverThread = createSocketRecveiverThread(rcvBufferSize, keepAlive, connectionTimeout, connectionRetryCount, backupHostAndPort);
                         connectedToBackup.set(true);
                     } catch (Exception backupException) {
 
-                        log.error("Caught exception trying to connect to backup server: ",new Object[]{backupServer,ex});
+                        log.error("Caught exception trying to connect to backup server: ", new Object[]{backupServer, ex});
                         throw new ProcessException(String.format("Caught exception trying to create thread to process " +
                                 "data from backup server: %s", backupServer), backupException);
                     }
-                }else {
-                    final String connectionMsg = connectedToBackup.get() ? String.format("Already connected to backup %s",backupServer) :
-                                                 "No backup server configured to connect to" ;
+                } else {
+                    final String connectionMsg = connectedToBackup.get() ? String.format("Already connected to backup %s", backupServer) :
+                            "No backup server configured to connect to";
                     log.info(connectionMsg);
                     throw new ProcessException(String.format("Caught exception trying to create thread to process data from host: %s", hostAndPort[0]), ex);
                 }
@@ -289,6 +324,13 @@ public final class GetTCP extends AbstractProcessor {
 
         }
 
+    }
+
+    protected SocketRecveiverThread createSocketRecveiverThread(int rcvBufferSize, boolean keepAlive, int connectionTimeout, int connectionRetryCount, String[] hostAndPort) {
+        SocketRecveiverThread socketRecveiverThread;
+        socketRecveiverThread = new SocketRecveiverThread(hostAndPort[0],
+                Integer.parseInt(hostAndPort[1]), backupServer, keepAlive, rcvBufferSize, connectionTimeout, connectionRetryCount);
+        return socketRecveiverThread;
     }
 
     @OnStopped
@@ -318,14 +360,11 @@ public final class GetTCP extends AbstractProcessor {
 
         try {
             final StringBuilder messages = new StringBuilder();
-            if(socketMessagesReceived.size() > batchSize) {
+            if (socketMessagesReceived.size() >= batchSize) {
                 for (int i = 0; i < batchSize; i++) {
-                    //double check -- this check maybe faster than the poll.
-                    if(socketMessagesReceived.size() > batchSize) {
-                        messages.append(socketMessagesReceived.poll(100, TimeUnit.MILLISECONDS));
-                    }
+                    messages.append(socketMessagesReceived.poll(100, TimeUnit.MILLISECONDS));
                 }
-            }else{
+            } else {
                 messages.append(socketMessagesReceived.poll(100, TimeUnit.MILLISECONDS));
             }
             if (0 == messages.length()) {
@@ -342,10 +381,10 @@ public final class GetTCP extends AbstractProcessor {
             //
             // Both of these are not ideal, for now just show the whole list and someone can still use a
             // ROA processor and see if the attribute contains a host.
-            flowFile = session.putAttribute(flowFile,"ServerList",originalServerAddressList);
+            flowFile = session.putAttribute(flowFile, "ServerList", originalServerAddressList);
             //add any dynamic properties
-            if(0 < dynamicAttributes.size()){
-                flowFile = session.putAllAttributes(flowFile,dynamicAttributes);
+            if (0 < dynamicAttributes.size()) {
+                flowFile = session.putAllAttributes(flowFile, dynamicAttributes);
             }
             session.transfer(flowFile, REL_SUCCESS);
 
@@ -355,7 +394,7 @@ public final class GetTCP extends AbstractProcessor {
     }
 
 
-    private class SocketRecveiverThread implements Runnable {
+    protected class SocketRecveiverThread implements Runnable {
 
         private SocketChannel socketChannel = null;
         private boolean keepProcessing = true;
@@ -369,7 +408,17 @@ public final class GetTCP extends AbstractProcessor {
         private final int maxConnectionAttemptCount;
 
 
-        SocketRecveiverThread(final String host, final int port, final String backupServer,final boolean keepAlive,
+        protected SocketRecveiverThread() {
+            this.host = "";
+            this.port = 0;
+            this.backupServer = "";
+            this.rcvBufferSize = 0;
+            this.keepAlive = false;
+            this.connectionTimeout = 0;
+            this.maxConnectionAttemptCount = 0;
+        }
+
+        SocketRecveiverThread(final String host, final int port, final String backupServer, final boolean keepAlive,
                               final int rcvBufferSize,
                               final int connectionTimeout,
                               final int maxConnectionAttemptCount) {
@@ -381,7 +430,7 @@ public final class GetTCP extends AbstractProcessor {
             this.keepAlive = keepAlive;
             this.connectionTimeout = connectionTimeout;
             this.maxConnectionAttemptCount = maxConnectionAttemptCount;
-            establishConnection(host,port);
+            establishConnection(host, port);
 
         }
 
@@ -402,18 +451,18 @@ public final class GetTCP extends AbstractProcessor {
             while (!isConnected) {
                 //if this is our original attempt, the attempt connection.
 
-                if(0 == currentConnectionAttemptCount) {
+                if (0 == currentConnectionAttemptCount) {
                     //this may not really be the first, as it may occur after we have lost the connection and are
                     //trying again.
-                    log.info("Attempting first connection to host: {}:{}", new Object[]{host,port});
+                    log.info("Attempting first connection to host: {}:{}", new Object[]{host, port});
                     currentConnectionAttemptCount++;
                     try {
-                        isConnected = initiateConnection(host,port);
+                        isConnected = initiateConnection(host, port);
                         if (isConnected) {
-                            log.info("Successfully connected to: {}:{}", new Object[]{host,port});
+                            log.info("Successfully connected to: {}:{}", new Object[]{host, port});
                             break;
                         }
-                    }catch(Exception ex){
+                    } catch (Exception ex) {
                         //this may happened, swallow it and let the rest of retry logic take hold.
                     }
                 }
@@ -421,25 +470,28 @@ public final class GetTCP extends AbstractProcessor {
                     log.info("Attempting connection to host: {} after timeout", new Object[]{host});
                     //we have exceeded the timeout, we need to try to initiate a different connection
                     //need to only try and reconnect, if we have not exceeded a retry count.
-                    if(currentConnectionAttemptCount < maxConnectionAttemptCount) {
+                    if(currentConnectionAttemptCount >= maxConnectionAttemptCount){
+                        //need to throw as we cannot connect to any host
+                        throw new ProcessException("Could not connect to any hosts, tried main and backup. Giving up.");
+                    }else{
                         try {
                             currentConnectionAttemptCount++;
-                            isConnected = initiateConnection(host,port);
+                            isConnected = initiateConnection(host, port);
                             if (isConnected) {
                                 log.info("Successfully connected to: {}:{}", new Object[]{host, port});
+                                // startTime = Instant.now().getEpochSecond();
                                 break;
                             }
-                            startTime = Instant.now().getEpochSecond();
-                        }catch(Exception ex){
+
+                        } catch (Exception ex) {
                             //if we have not exceed the retry count, just swallow this as it may happen
                             //otherwise we need to use the fail over or bail.
-                            if(currentConnectionAttemptCount == maxConnectionAttemptCount){
+                            if (currentConnectionAttemptCount == maxConnectionAttemptCount) {
                                 throw ex;
                             }
                         }
                     }
-
-                } else {
+                } else{
                     try {
                         log.info("Waiting to connect to: {}:{}", new Object[]{host, port});
                         Thread.sleep(500);
@@ -451,6 +503,7 @@ public final class GetTCP extends AbstractProcessor {
                     }
                 }
             }
+
         }
 
         private boolean initiateConnection(final String host, final int port) {
@@ -519,16 +572,16 @@ public final class GetTCP extends AbstractProcessor {
                             if (!socketAlive) {
 
                                 try {
-                                    establishConnection(this.host,this.port);
-                                }catch (Exception ex){
+                                    establishConnection(this.host, this.port);
+                                } catch (Exception ex) {
                                     //we could not connect to our set host and port, so try a backup if it exists.
                                     //otherwise just bail.
-                                    if(!connectedToBackup.get() && !backupServer.isEmpty()){
+                                    if (!connectedToBackup.get() && !backupServer.isEmpty()) {
                                         final String[] backupParts = backupServer.split(":");
                                         //anything thrown here will bubble.
-                                        establishConnection(backupParts[0],Integer.parseInt(backupParts[1]));
+                                        establishConnection(backupParts[0], Integer.parseInt(backupParts[1]));
                                         connectedToBackup.set(true);
-                                    }else{
+                                    } else {
                                         throw ex;
                                     }
                                 }
@@ -578,17 +631,17 @@ public final class GetTCP extends AbstractProcessor {
             // Timeout required - it's in milliseconds
             int timeout = connectionTimeout * 1000;
 
-            log.debug("Trying to connect to {}:{}",new Object[]{this.host,port});
+            log.debug("Trying to connect to {}:{}", new Object[]{this.host, port});
             try {
                 socket.connect(socketAddress, timeout);
                 socket.close();
                 isAlive = true;
 
             } catch (SocketTimeoutException exception) {
-                log.info("Timed out trying to connect to socket for {}:{}",new Object[]{this.host,port});
+                log.info("Timed out trying to connect to socket for {}:{}", new Object[]{this.host, port});
             } catch (IOException exception) {
                 log.info(
-                        "IOException - Unable to connect to {}:{}", new Object[]{this.host,port,exception});
+                        "IOException - Unable to connect to {}:{}", new Object[]{this.host, port, exception});
             }
             return isAlive;
         }
