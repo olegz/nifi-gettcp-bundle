@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/nifi-gettcp-bundle.iml" filepath="$PROJECT_DIR$/nifi-gettcp-bundle.iml" />
+      <module fileurl="file://$PROJECT_DIR$/nifi-gettcp-nar/nifi-gettcp-nar.iml" filepath="$PROJECT_DIR$/nifi-gettcp-nar/nifi-gettcp-nar.iml" />
+      <module fileurl="file://$PROJECT_DIR$/nifi-gettcp-processors/nifi-gettcp-processors.iml" filepath="$PROJECT_DIR$/nifi-gettcp-processors/nifi-gettcp-processors.iml" />
+    </modules>
+  </component>
+</project>

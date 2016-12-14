@@ -19,6 +19,7 @@ package org.apache.nifi.processors.gettcp;
 
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
+
 import org.apache.nifi.annotation.behavior.SupportsBatching;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
@@ -28,7 +29,6 @@ import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.ValidationContext;
 import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.components.Validator;
-import org.apache.nifi.expression.AttributeExpression;
 import org.apache.nifi.flowfile.FlowFile;
 import org.apache.nifi.logging.ComponentLog;
 import org.apache.nifi.processor.AbstractProcessor;
@@ -39,16 +39,36 @@ import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 
 import java.io.IOException;
-import java.net.*;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketTimeoutException;
+import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
-import java.nio.channels.*;
+import java.nio.channels.AlreadyConnectedException;
+import java.nio.channels.ConnectionPendingException;
+import java.nio.channels.SocketChannel;
+import java.nio.channels.UnresolvedAddressException;
+import java.nio.channels.UnsupportedAddressTypeException;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
+import java.nio.charset.MalformedInputException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @SupportsBatching
@@ -224,10 +244,10 @@ public class GetTCP extends AbstractProcessor {
 
     private Map<SocketRecveiverThread, Future> socketToFuture = new HashMap<>();
     private ExecutorService executorService;
-    private ComponentLog log = getLogger();
-    private String originalServerAddressList;
-    private String backupServer;
-    private int batchSize;
+    private transient ComponentLog log = getLogger();
+    private transient String originalServerAddressList;
+    private transient String backupServer;
+    private transient int batchSize;
 
     /**
      * Bounded queue of messages events from the socket.
@@ -389,7 +409,7 @@ public class GetTCP extends AbstractProcessor {
             session.transfer(flowFile, REL_SUCCESS);
 
         } catch (InterruptedException exception) {
-            throw new ProcessException(exception);
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -406,17 +426,6 @@ public class GetTCP extends AbstractProcessor {
         private final int rcvBufferSize;
         private final int connectionTimeout;
         private final int maxConnectionAttemptCount;
-
-
-        protected SocketRecveiverThread() {
-            this.host = "";
-            this.port = 0;
-            this.backupServer = "";
-            this.rcvBufferSize = 0;
-            this.keepAlive = false;
-            this.connectionTimeout = 0;
-            this.maxConnectionAttemptCount = 0;
-        }
 
         SocketRecveiverThread(final String host, final int port, final String backupServer, final boolean keepAlive,
                               final int rcvBufferSize,
@@ -591,16 +600,21 @@ public class GetTCP extends AbstractProcessor {
                             log.debug("Read {} from socket", new Object[]{nBytes});
                             buf.flip();
                             CharsetDecoder decoder = charset.newDecoder();
-                            CharBuffer charBuffer = decoder.decode(buf);
+                            try {
+                                CharBuffer charBuffer = decoder.decode(buf);
 
-                            if (log.isDebugEnabled()) {
-                                final String message = charBuffer.toString();
-                                log.debug("Received Message: {}", new Object[]{message});
+
+                                if (log.isDebugEnabled()) {
+                                    final String message = charBuffer.toString();
+                                    log.debug("Received Message: {}", new Object[]{message});
+                                }
+
+                                socketMessagesReceived.offer(charBuffer.toString());
+                                buf.flip();
+                                buf.clear();
+                            }catch(MalformedInputException ex){
+                                log.error("Caught MalformedInputException trying to decode bytes from socket.",ex);
                             }
-
-                            socketMessagesReceived.offer(charBuffer.toString());
-                            buf.flip();
-                            buf.clear();
                         }
                     }
                 }
