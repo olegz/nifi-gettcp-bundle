@@ -75,7 +75,7 @@ public class Server extends AbstractSocketHandler {
      * thread.
      */
     @Override
-    void read(SelectionKey selectionKey, ByteBuffer readBuffer) throws IOException {
+    void processData(SelectionKey selectionKey, ByteBuffer readBuffer) throws IOException {
         logger.info("Server received message of " + readBuffer.limit() + " bytes in size and will delegate to all registered clients.");
         for (SelectionKey key : selector.keys()) {
             if (key.isValid() && key.channel() instanceof SocketChannel && !selectionKey.equals(key)) {

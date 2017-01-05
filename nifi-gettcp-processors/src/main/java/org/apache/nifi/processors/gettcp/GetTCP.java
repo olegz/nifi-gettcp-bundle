@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.nifi.processors.gettcp;
 
 import java.io.IOException;
@@ -33,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.nifi.annotation.behavior.InputRequirement;
 import org.apache.nifi.annotation.behavior.SideEffectFree;
 import org.apache.nifi.annotation.behavior.TriggerSerially;
+import org.apache.nifi.annotation.behavior.WritesAttribute;
 import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
@@ -53,7 +53,10 @@ import org.apache.nifi.processor.util.StandardValidators;
 @Tags({"get", "fetch", "poll", "tcp", "ingest", "source", "input"})
 @InputRequirement(InputRequirement.Requirement.INPUT_FORBIDDEN)
 @CapabilityDescription("Connects over TCP to the provided endpoint(s). Received data will be written as content to the FlowFile")
+@WritesAttribute(attribute = "source.endpoint", description = "The address of the source endpoint the message came from")
 public class GetTCP extends AbstractSessionFactoryProcessor {
+
+    private static String SOURCE_ENDPOINT_ATTRIBUTE = "source.endpoint";
 
     public static final PropertyDescriptor ENDPOINT_LIST = new PropertyDescriptor.Builder()
             .name("endpoint-list")
@@ -265,17 +268,18 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
         NiFiDelegatingMessageHandler(ProcessSessionFactory sessionFactory) {
             this.sessionFactory = sessionFactory;
         }
+
         @Override
-        public void handle(byte[] message) {
+        public void handle(InetSocketAddress sourceAddress, byte[] message) {
             ProcessSession session = this.sessionFactory.createSession();
             FlowFile flowFile = session.create();
             flowFile = session.write(flowFile, new OutputStreamCallback() {
                 @Override
                 public void process(OutputStream out) throws IOException {
-                    System.out.println("Received message: " + new String(message));
                     out.write(message);
                 }
             });
+            flowFile = session.putAttribute(flowFile, SOURCE_ENDPOINT_ATTRIBUTE, sourceAddress.toString());
             if (!GetTCP.this.dynamicAttributes.isEmpty()) {
                 flowFile = session.putAllAttributes(flowFile, GetTCP.this.dynamicAttributes);
             }

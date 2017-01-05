@@ -43,7 +43,7 @@ public class ReceivingClientTest {
 
         ReceivingClient client = new ReceivingClient(address, this.scheduler, 1024);
         AtomicReference<String> receivedMessage = new AtomicReference<String>();
-        client.setMessageHandler(message -> receivedMessage.set(new String(message, StandardCharsets.UTF_8)));
+        client.setMessageHandler((fromAddress, message) -> receivedMessage.set(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
@@ -66,7 +66,7 @@ public class ReceivingClientTest {
 
         ReceivingClient client = new ReceivingClient(address, this.scheduler, 30);
         List<String> messages = new ArrayList<>();
-        client.setMessageHandler(message -> messages.add(new String(message, StandardCharsets.UTF_8)));
+        client.setMessageHandler((fromAddress, message) -> messages.add(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
@@ -98,7 +98,7 @@ public class ReceivingClientTest {
 
         ReceivingClient client = new ReceivingClient(address, this.scheduler, 30);
         List<String> messages = new ArrayList<>();
-        client.setMessageHandler(message -> messages.add(new String(message, StandardCharsets.UTF_8)));
+        client.setMessageHandler((fromAddress, message) -> messages.add(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
@@ -134,7 +134,7 @@ public class ReceivingClientTest {
         client.setReconnectAttempts(5);
         client.setDelayMillisBeforeReconnect(200);
         AtomicReference<String> receivedMessage = new AtomicReference<String>();
-        client.setMessageHandler(message -> receivedMessage.set(new String(message, StandardCharsets.UTF_8)));
+        client.setMessageHandler((fromAddress, message) -> receivedMessage.set(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
@@ -161,14 +161,7 @@ public class ReceivingClientTest {
         client.setBackupAddress(addressMain);
         client.setReconnectAttempts(10);
         client.setDelayMillisBeforeReconnect(1000);
-        client.setDisconnectListener(new DisconnectListener() {
-            @Override
-            public void onDisconnect(ReceivingClient client) {
-                client.stop();
-                client.start();
-            }
-        });
-        client.setMessageHandler(message -> System.out.println(new String(message)));
+        client.setMessageHandler((fromAddress, message) -> System.out.println(new String(message)));
         client.start();
         assertTrue(client.isRunning());
 
