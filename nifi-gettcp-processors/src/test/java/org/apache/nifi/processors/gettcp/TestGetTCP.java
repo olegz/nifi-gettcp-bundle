@@ -17,39 +17,32 @@
 
 package org.apache.nifi.processors.gettcp;
 
-import org.apache.nifi.util.MockFlowFile;
-import org.apache.nifi.util.TestRunner;
-import org.apache.nifi.util.TestRunners;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.channels.ServerSocketChannel;
-import java.nio.channels.SocketChannel;
-import java.util.List;
-
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import java.io.PrintWriter;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.util.List;
+
+import org.apache.nifi.util.MockFlowFile;
+import org.apache.nifi.util.TestRunner;
+import org.apache.nifi.util.TestRunners;
+import org.junit.Before;
+import org.junit.Test;
+
 public final class TestGetTCP {
-    private ServerSocketChannel serverSocketChannel;
     private TestRunner testRunner;
-    private MockGetTCP processor;
-    private int listeningPort = 9999;
-    private SocketChannel clientSocket;
+    private GetTCP processor;
 
     @Before
     public void setup() {
-        processor = new MockGetTCP();
+        processor = new GetTCP();
         testRunner = TestRunners.newTestRunner(processor);
     }
 
     @Test
     public void testCustomPropertyValidator() {
-        //this only tests the properties that use the custom validator. It is assumed here
-        //that the rest of the NiFi test cases cover the built in validators.
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:9999");
         testRunner.assertValid();
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:-1");
@@ -68,9 +61,8 @@ public final class TestGetTCP {
         testRunner.assertValid();
         testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "127.0.0.1;1234");
         testRunner.assertNotValid();
-        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "127.0.0.1:1234");
+        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "555.0.0.1:1234");
         testRunner.assertValid();
-
     }
 
     @Test
@@ -81,144 +73,51 @@ public final class TestGetTCP {
     }
 
     @Test
-    public void testConnection() {
-        setupTCPServer();
-        setUpStandardTestConfig();
-        testRunner.run(1, true, true);
+    public void testConnection() throws Exception {
+        Server server = setupTCPServer(9999);
+        testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:" + 9999);
+        testRunner.run(100, false);
+        this.sendToSocket(new InetSocketAddress(9999), "Hello");
+        Thread.sleep(100);
         testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 1);
         testRunner.clearTransferState();
-        shutdownTCPServer();
-    }
-
-
-    @Test
-    public void testFailOver() {
-        setupTCPServer(9999);
-        setUpStandardTestConfig("10",9998,9999);
-        processor.backupServer = "localhost:9999";
-        processor.mainPort = 9998;
-        testRunner.run(1, true, true);
-
-        testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 1);
-        List<MockFlowFile> files = testRunner.getFlowFilesForRelationship(GetTCP.REL_SUCCESS);
-        assertNotNull(files);
-        assertTrue(1 == files.size());
-        testRunner.clearTransferState();
-        shutdownTCPServer();
-    }
-
-    @Test(expected = AssertionError.class)
-    public void testFailAllHosts() {
-        setupTCPServer(9999);
-        setUpStandardTestConfig("10",9998,9997);
-        processor.backupServer = "localhost:9997";
-        processor.mainPort = 9998;
-        testRunner.run(1, true, true);
-        shutdownTCPServer();
+        testRunner.shutdown();
+        server.stop();
     }
 
     @Test
-    public void testReceiveSingleMessages() throws IOException {
-        setupTCPServer();
-        setUpStandardTestConfig();
-        processor.numMessagesToSend = 10;
-        testRunner.run(10, true, true);
-        testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 10);
-        List<MockFlowFile> files = testRunner.getFlowFilesForRelationship(GetTCP.REL_SUCCESS);
-        assertNotNull(files);
-        assertTrue(10 == files.size());
-        testRunner.clearTransferState();
-        shutdownTCPServer();
-    }
-
-    @Test
-    public void testBatchMessages() throws IOException {
-        setupTCPServer();
-        setUpStandardTestConfig("10");
-        processor.numMessagesToSend = 10;
-        testRunner.run(1, true, true);
-        testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 1);
-        List<MockFlowFile> files = testRunner.getFlowFilesForRelationship(GetTCP.REL_SUCCESS);
-        assertNotNull(files);
-        assertTrue(1 == files.size());
-        testRunner.clearTransferState();
-        shutdownTCPServer();
-    }
-
-    private void setUpStandardTestConfig() {
-        setUpStandardTestConfig("1",listeningPort,listeningPort +1);
-    }
-
-    private void setUpStandardTestConfig(final String batchSize) {
-        setUpStandardTestConfig(batchSize,listeningPort,listeningPort +1);
-    }
-    private void setUpStandardTestConfig(final String bacthSize,int endpointPort, int backupPort) {
-        testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:" + endpointPort);
-        testRunner.setProperty(GetTCP.BATCH_SIZE, bacthSize);
+    public void testFailOver() throws Exception {
+        Server server = setupTCPServer(9999);
+        testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:" + 9998);
+        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "localhost:" + 9999);
         testRunner.setProperty(GetTCP.CONNECTION_ATTEMPT_COUNT, "1");
-        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "localhost:" + backupPort);
+        testRunner.setProperty(GetTCP.RECONNECT_INTERVAL, "0 millis");
         testRunner.assertValid();
-    }
-    private void setupTCPServer(int port) {
-        try {
-            serverSocketChannel = ServerSocketChannel.open();
-
-            InetSocketAddress inetSocketAddress = new InetSocketAddress("localhost", port);
-            serverSocketChannel.configureBlocking(false);
-            serverSocketChannel.bind(inetSocketAddress);
-            serverSocketChannel.accept();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
-    }
-    private void setupTCPServer() {
-        setupTCPServer(listeningPort);
-    }
-    private void shutdownTCPServer() {
-        try {
-            if(null != serverSocketChannel) {
-                serverSocketChannel.close();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        testRunner.run(1000, false);
+        Thread.sleep(200);
+        this.sendToSocket(new InetSocketAddress(9999), "Hello");
+        Thread.sleep(100);
+        testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 1);
+        List<MockFlowFile> files = testRunner.getFlowFilesForRelationship(GetTCP.REL_SUCCESS);
+        assertNotNull(files);
+        assertTrue(1 == files.size());
+        testRunner.clearTransferState();
+        testRunner.shutdown();
+        server.stop();
     }
 
-    protected class MockGetTCP extends GetTCP {
+    private Server setupTCPServer(int port) {
+        InetSocketAddress address = new InetSocketAddress(port);
+        Server server = new Server(address, 1024);
+        server.start();
+        return server;
+    }
 
-        int numMessagesToSend;
-        int mainPort;
-        String backupServer;
-        boolean killPrimary;
-
-
-        @Override
-        protected SocketRecveiverThread createSocketRecveiverThread(int rcvBufferSize, boolean keepAlive, int connectionTimeout, int connectionRetryCount, String[] hostAndPort) {
-            return new MockSocketReceiverThread(hostAndPort[0],
-                    Integer.parseInt(hostAndPort[1]), backupServer, keepAlive, rcvBufferSize, connectionTimeout, connectionRetryCount);
-        }
-
-        class MockSocketReceiverThread extends GetTCP.SocketRecveiverThread {
-
-            final String backup;
-            MockSocketReceiverThread(final String host, final int port, final String backupServer, final boolean keepAlive,
-                                     final int rcvBufferSize,
-                                     final int connectionTimeout,
-                                     final int maxConnectionAttemptCount) {
-
-                super(host, port, backupServer, keepAlive, rcvBufferSize, connectionTimeout, maxConnectionAttemptCount);
-                this.backup = backupServer;
-            }
-
-            @Override
-            public void run() {
-                for (int i = 0; i < numMessagesToSend; i++) {
-                    socketMessagesReceived.offer("Message number: " + i);
-                }
-
-            }
-
-        }
+    private void sendToSocket(InetSocketAddress address, String message) throws Exception {
+        Socket socket = new Socket(address.getAddress(), address.getPort());
+        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+        out.write(message);
+        out.flush();
+        socket.close();
     }
 }
