@@ -33,7 +33,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Base class to implement network Client/Server components
+ * Base class to implement async TCP Client/Server components
  *
  */
 abstract class AbstractSocketHandler {
@@ -99,7 +99,7 @@ abstract class AbstractSocketHandler {
     public void stop() {
         if (this.isRunning.compareAndSet(true, false)) {
             try {
-                if (this.selector.isOpen()) { // since stop must be idempotent, we need to check if selector is open to avoid ClosedSelectorException
+                if (this.selector != null && this.selector.isOpen()) { // since stop must be idempotent, we need to check if selector is open to avoid ClosedSelectorException
                     Set<SelectionKey> selectionKeys = new HashSet<>(this.selector.keys());
                     for (SelectionKey key : selectionKeys) {
                         key.cancel();
@@ -138,19 +138,12 @@ abstract class AbstractSocketHandler {
     abstract InetSocketAddress connect() throws Exception;
 
     /**
-     *
-     * @param selectionKey
-     * @param buffer
+     * Will process the data received from the channel
+     * @param selectionKey key for the channel the data came from
+     * @param buffer buffer of received data
      * @throws IOException
      */
-    abstract void read(SelectionKey selectionKey, ByteBuffer buffer) throws IOException;
-
-    /**
-     *
-     */
-    void onDisconnect(Object object) {
-        // noop
-    }
+    abstract void processData(SelectionKey selectionKey, ByteBuffer buffer) throws IOException;
 
     /**
      *
@@ -171,47 +164,29 @@ abstract class AbstractSocketHandler {
         public void run() {
             try {
                 while (AbstractSocketHandler.this.rootChannel != null && AbstractSocketHandler.this.rootChannel.isOpen() && AbstractSocketHandler.this.selector.isOpen()) {
-                    this.processSelector(10);
+                    if (AbstractSocketHandler.this.selector.isOpen() && AbstractSocketHandler.this.selector.select(10) > 0) {
+                        Iterator<SelectionKey> keys = AbstractSocketHandler.this.selector.selectedKeys().iterator();
+                        while (keys.hasNext()) {
+                            SelectionKey selectionKey = keys.next();
+                            keys.remove();
+                            if (selectionKey.isValid()) {
+                                if (selectionKey.isAcceptable()) {
+                                    this.accept(selectionKey);
+                                } else if (selectionKey.isReadable()) {
+                                    this.read(selectionKey);
+                                } else if (selectionKey.isConnectable()) {
+                                    this.connect(selectionKey);
+                                }
+                            }
+                        }
+                    }
                 }
             } catch (Exception e) {
                 logger.error("Exception in socket listener loop", e);
             }
 
             logger.debug("Exited Listener loop.");
-
             AbstractSocketHandler.this.stop();
-        }
-
-        /**
-         *
-         * @param timeout
-         * @throws Exception
-         */
-        private void processSelector(int timeout) throws Exception {
-            if (AbstractSocketHandler.this.selector.isOpen() && AbstractSocketHandler.this.selector.select(timeout) > 0) {
-                Iterator<SelectionKey> keys = AbstractSocketHandler.this.selector.selectedKeys().iterator();
-                processKeys(keys);
-            }
-        }
-
-        /**
-         *
-         * @param keys
-         */
-        private void processKeys(Iterator<SelectionKey> keys) throws IOException {
-            while (keys.hasNext()) {
-                SelectionKey selectionKey = keys.next();
-                keys.remove();
-                if (selectionKey.isValid()) {
-                    if (selectionKey.isAcceptable()) {
-                        this.accept(selectionKey);
-                    } else if (selectionKey.isReadable()) {
-                        this.read(selectionKey);
-                    } else if (selectionKey.isConnectable()) {
-                        this.connect(selectionKey);
-                    }
-                }
-            }
         }
 
         /**
@@ -233,7 +208,13 @@ abstract class AbstractSocketHandler {
         }
 
         /**
-         *
+         * The main read loop which reads packets from the channel and sends
+         * them to implementations of
+         * {@link AbstractSocketHandler#processData(SelectionKey, ByteBuffer)}.
+         * So if a given implementation is a Server it is probably going to
+         * broadcast received message to all connected sockets (e.g., chat
+         * server). If such implementation is the Client, then it is most likely
+         * the end of the road where message is processed.
          */
         private void read(SelectionKey selectionKey) throws IOException {
             AbstractSocketHandler.this.readingBuffer.clear();
@@ -244,11 +225,11 @@ abstract class AbstractSocketHandler {
                     AbstractSocketHandler.this.readingBuffer.flip();
                     byte[] message = new byte[AbstractSocketHandler.this.readingBuffer.limit()];
                     AbstractSocketHandler.this.readingBuffer.get(message);
-                    AbstractSocketHandler.this.read(selectionKey, ByteBuffer.wrap(message));
+                    AbstractSocketHandler.this.processData(selectionKey, ByteBuffer.wrap(message));
                     AbstractSocketHandler.this.readingBuffer.rewind();
                 }
             } catch (IOException e) {
-                e.printStackTrace();
+                logger.warn("Detected failure while in the read loop ", e);
                 selectionKey.cancel();
                 socketChannel.close();
                 if (count == -1 && logger.isInfoEnabled()) {
@@ -258,7 +239,9 @@ abstract class AbstractSocketHandler {
             if (count == -1) {
                 selectionKey.cancel();
                 socketChannel.close();
-                logger.info("Connection closed by: " + socketChannel.socket());
+                if (logger.isInfoEnabled()) {
+                    logger.info("Connection closed by: " + socketChannel.socket());
+                }
             }
         }
     }

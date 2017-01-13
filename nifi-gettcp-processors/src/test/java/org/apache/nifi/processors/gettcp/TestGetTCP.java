@@ -43,6 +43,8 @@ public final class TestGetTCP {
 
     @Test
     public void testCustomPropertyValidator() {
+        testRunner.setProperty(GetTCP.ENDPOINT_LIST, "!@;;*blah:9999");
+        testRunner.assertNotValid();
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:9999");
         testRunner.assertValid();
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:-1");
@@ -62,7 +64,7 @@ public final class TestGetTCP {
         testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "127.0.0.1;1234");
         testRunner.assertNotValid();
         testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "555.0.0.1:1234");
-        testRunner.assertValid();
+        testRunner.assertNotValid();
     }
 
     @Test

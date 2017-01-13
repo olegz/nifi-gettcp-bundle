@@ -42,7 +42,7 @@ public class ReceivingClient extends AbstractSocketHandler {
 
     private volatile MessageHandler messageHandler;
 
-    private volatile DisconnectListener disconnectListener;
+    private volatile InetSocketAddress connectedAddress;
 
     public ReceivingClient(InetSocketAddress address, int readingBufferSize) {
         this(address, Executors.newScheduledThreadPool(1), readingBufferSize);
@@ -69,24 +69,11 @@ public class ReceivingClient extends AbstractSocketHandler {
         this.messageHandler = messageHandler;
     }
 
-    public void setDisconnectListener(DisconnectListener disconnectListener) {
-        this.disconnectListener = disconnectListener;
-    }
-
-    @Override
-    void onDisconnect(Object object) {
-        if (this.disconnectListener != null) {
-            this.disconnectListener.onDisconnect(this);
-        }
-    }
-
     /**
      *
      */
     @Override
     InetSocketAddress connect() throws Exception {
-        AtomicReference<InetSocketAddress> connectedAddress = new AtomicReference<>();
-        ;
         CountDownLatch latch = new CountDownLatch(1);
         AtomicInteger attempt = new AtomicInteger();
         AtomicReference<Exception> connectionError = new AtomicReference<Exception>();
@@ -96,7 +83,7 @@ public class ReceivingClient extends AbstractSocketHandler {
                 try {
                     rootChannel = doConnect(address);
                     latch.countDown();
-                    connectedAddress.set(address);
+                    connectedAddress = address;
                 } catch (Exception e) {
                     if (logger.isInfoEnabled()) {
                         logger.info("Failed to connect to primary endpoint '" + address + "'.");
@@ -116,7 +103,7 @@ public class ReceivingClient extends AbstractSocketHandler {
                                     logger.info("Attempting to conect to secondary endppoint '" + backupAddress + "'.");
                                 }
                                 rootChannel = doConnect(backupAddress);
-                                connectedAddress.set(backupAddress);
+                                connectedAddress = backupAddress;
                             } catch (Exception re) {
                                 logger.error("Failed to connect to secondary endpoint.");
                                 connectionError.set(re);
@@ -141,7 +128,7 @@ public class ReceivingClient extends AbstractSocketHandler {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Current thread is interrupted");
         }
-        return connectedAddress.get();
+        return this.connectedAddress;
     }
 
     private SocketChannel doConnect(InetSocketAddress addressToConnect) throws IOException {
@@ -159,12 +146,12 @@ public class ReceivingClient extends AbstractSocketHandler {
      *
      */
     @Override
-    void read(SelectionKey selectionKey, ByteBuffer messageBuffer) throws IOException {
+    void processData(SelectionKey selectionKey, ByteBuffer messageBuffer) throws IOException {
         byte[] message = new byte[messageBuffer.limit()];
         logger.debug("Received message(size=" + message.length + ")");
         messageBuffer.get(message);
         if (this.messageHandler != null) {
-            this.messageHandler.handle(message);
+            this.messageHandler.handle(this.connectedAddress, message);
         }
     }
 }
