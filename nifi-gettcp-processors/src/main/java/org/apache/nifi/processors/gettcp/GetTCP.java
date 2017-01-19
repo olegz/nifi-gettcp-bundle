@@ -68,14 +68,6 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
             .addValidator(GetTCPUtils.ENDPOINT_VALIDATOR)
             .build();
 
-    public static final PropertyDescriptor FAILOVER_ENDPOINT = new PropertyDescriptor.Builder()
-            .name("failover-endpoint")
-            .displayName("Failover Endpoint")
-            .description("A failover server to connect to if one of the main ones is unreachable after the connection " +
-                    "attempt count. The format should be <server_address>:<port>.")
-            .addValidator(GetTCPUtils.ENDPOINT_VALIDATOR)
-            .build();
-
     public static final PropertyDescriptor CONNECTION_ATTEMPT_COUNT = new PropertyDescriptor.Builder()
             .name("connection-attempt-timeout")
             .displayName("Connection Attempt Count")
@@ -104,10 +96,29 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
             .addValidator(StandardValidators.createLongValidator(1, 2048, true))
             .build();
 
+    public static final PropertyDescriptor END_OF_MESSAGE_BYTE = new PropertyDescriptor.Builder()
+            .name("end-of-message-byte")
+            .displayName("End of message delimiter byte")
+            .description("Byte value which denotes end of message. Must be specified as integer within "
+                    + "the valid byte range (-128 thru 127). For example, '13' = Carriage return and '10' = New line. Default '13'.")
+            .required(true)
+            .defaultValue("13")
+            .addValidator(StandardValidators.createLongValidator(-128, 127, true))
+            .build();
+
 
     public static final Relationship REL_SUCCESS = new Relationship.Builder()
             .name("Success")
-            .description("The relationship that all sucessful messages from the WebSocket will be sent to")
+            .description("The relationship that all sucessful messages from the endpoint will be sent to.")
+            .build();
+
+    public static final Relationship REL_PARTIAL = new Relationship.Builder()
+            .name("Partial")
+            .description("The relationship that all incomplete messages from the endpoint will be sent to. "
+                    + "Incomplete message is the message that doesn't end with 'End of message delimiter byte'. "
+                    + "This can happen when 'Receive Buffer Size' is smaller then the incoming message. If that happens that "
+                    + "the subsequent message that completes the previous incomplete message will also end up in this "
+                    + "relationship, after which subsequent 'complete' messages will go to 'success'.")
             .build();
 
     private final static List<PropertyDescriptor> DESCRIPTORS;
@@ -121,15 +132,16 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
     static {
         List<PropertyDescriptor> _propertyDescriptors = new ArrayList<>();
         _propertyDescriptors.add(ENDPOINT_LIST);
-        _propertyDescriptors.add(FAILOVER_ENDPOINT);
         _propertyDescriptors.add(CONNECTION_ATTEMPT_COUNT);
         _propertyDescriptors.add(RECONNECT_INTERVAL);
         _propertyDescriptors.add(RECEIVE_BUFFER_SIZE);
+        _propertyDescriptors.add(END_OF_MESSAGE_BYTE);
 
         DESCRIPTORS = Collections.unmodifiableList(_propertyDescriptors);
 
         Set<Relationship> _relationships = new HashSet<>();
         _relationships.add(REL_SUCCESS);
+        _relationships.add(REL_PARTIAL);
         RELATIONSHIPS = Collections.unmodifiableSet(_relationships);
     }
 
@@ -143,13 +155,13 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
 
     private volatile String originalServerAddressList;
 
-    private volatile String backupServer;
-
     private volatile int receiveBufferSize;
 
     private volatile int connectionAttemptCount;
 
     private volatile long reconnectInterval;
+
+    private volatile byte endOfMessageByte;
 
     @Override
     public Set<Relationship> getRelationships() {
@@ -165,7 +177,7 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
     public void onScheduled(final ProcessContext context) throws ProcessException {
         this.receiveBufferSize = context.getProperty(RECEIVE_BUFFER_SIZE).asInteger();
         this.originalServerAddressList = context.getProperty(ENDPOINT_LIST).getValue();
-        this.backupServer = context.getProperty(FAILOVER_ENDPOINT).getValue();
+        this.endOfMessageByte = ((byte) context.getProperty(END_OF_MESSAGE_BYTE).asInteger().intValue());
         this.connectionAttemptCount = context.getProperty(CONNECTION_ATTEMPT_COUNT).asInteger();
         this.reconnectInterval = context.getProperty(RECONNECT_INTERVAL).asTimePeriod(TimeUnit.MILLISECONDS);
 
@@ -226,13 +238,9 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
             if (!this.liveTcpClients.containsKey(hostPortPair)) {
                 String[] hostAndPort = hostPortPair.split(":");
                 InetSocketAddress address = new InetSocketAddress(hostAndPort[0], Integer.parseInt(hostAndPort[1]));
-                client = new ReceivingClient(address, this.clientScheduler, this.receiveBufferSize);
+                client = new ReceivingClient(address, this.clientScheduler, this.receiveBufferSize, this.endOfMessageByte);
                 client.setReconnectAttempts(this.connectionAttemptCount);
                 client.setDelayMillisBeforeReconnect(this.reconnectInterval);
-                if (this.backupServer != null) {
-                    hostAndPort = this.backupServer.split(":");
-                    client.setBackupAddress(new InetSocketAddress(hostAndPort[0], Integer.parseInt(hostAndPort[1])));
-                }
                 client.setMessageHandler(this.delegatingMessageHandler);
                 this.liveTcpClients.put(hostPortPair, client);
                 this.startClient(client);
@@ -270,7 +278,7 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
         }
 
         @Override
-        public void handle(InetSocketAddress sourceAddress, byte[] message) {
+        public void handle(InetSocketAddress sourceAddress, byte[] message, boolean partialMessage) {
             ProcessSession session = this.sessionFactory.createSession();
             FlowFile flowFile = session.create();
             flowFile = session.write(flowFile, new OutputStreamCallback() {
@@ -283,7 +291,11 @@ public class GetTCP extends AbstractSessionFactoryProcessor {
             if (!GetTCP.this.dynamicAttributes.isEmpty()) {
                 flowFile = session.putAllAttributes(flowFile, GetTCP.this.dynamicAttributes);
             }
-            session.transfer(flowFile, REL_SUCCESS);
+            if (partialMessage) {
+                session.transfer(flowFile, REL_PARTIAL);
+            } else {
+                session.transfer(flowFile, REL_SUCCESS);
+            }
             session.commit();
         }
     }

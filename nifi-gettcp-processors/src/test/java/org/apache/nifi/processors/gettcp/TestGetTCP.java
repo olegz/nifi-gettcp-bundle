@@ -17,15 +17,10 @@
 
 package org.apache.nifi.processors.gettcp;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-
 import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.util.List;
 
-import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
 import org.junit.Before;
@@ -42,7 +37,7 @@ public final class TestGetTCP {
     }
 
     @Test
-    public void testCustomPropertyValidator() {
+    public void testSelectPropertiesValidation() {
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "!@;;*blah:9999");
         testRunner.assertNotValid();
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:9999");
@@ -61,10 +56,10 @@ public final class TestGetTCP {
         testRunner.assertNotValid();
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:9999,localhost:1234");
         testRunner.assertValid();
-        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "127.0.0.1;1234");
+        testRunner.setProperty(GetTCP.END_OF_MESSAGE_BYTE, "354");
         testRunner.assertNotValid();
-        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "555.0.0.1:1234");
-        testRunner.assertNotValid();
+        testRunner.setProperty(GetTCP.END_OF_MESSAGE_BYTE, "13");
+        testRunner.assertValid();
     }
 
     @Test
@@ -75,12 +70,12 @@ public final class TestGetTCP {
     }
 
     @Test
-    public void testConnection() throws Exception {
+    public void testSuccessInteraction() throws Exception {
         Server server = setupTCPServer(9999);
         testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:" + 9999);
-        testRunner.run(100, false);
-        this.sendToSocket(new InetSocketAddress(9999), "Hello");
-        Thread.sleep(100);
+        testRunner.run(1000, false);
+        this.sendToSocket(new InetSocketAddress(9999), "Hello\r");
+        Thread.sleep(200);
         testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 1);
         testRunner.clearTransferState();
         testRunner.shutdown();
@@ -88,21 +83,19 @@ public final class TestGetTCP {
     }
 
     @Test
-    public void testFailOver() throws Exception {
+    public void testPartialInteraction() throws Exception {
         Server server = setupTCPServer(9999);
-        testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:" + 9998);
-        testRunner.setProperty(GetTCP.FAILOVER_ENDPOINT, "localhost:" + 9999);
-        testRunner.setProperty(GetTCP.CONNECTION_ATTEMPT_COUNT, "1");
-        testRunner.setProperty(GetTCP.RECONNECT_INTERVAL, "0 millis");
-        testRunner.assertValid();
+        testRunner.setProperty(GetTCP.ENDPOINT_LIST, "localhost:" + 9999);
+        testRunner.setProperty(GetTCP.RECEIVE_BUFFER_SIZE, "2");
         testRunner.run(1000, false);
+        this.sendToSocket(new InetSocketAddress(9999), "Hello\r");
         Thread.sleep(200);
-        this.sendToSocket(new InetSocketAddress(9999), "Hello");
-        Thread.sleep(100);
+        testRunner.assertAllFlowFilesTransferred(GetTCP.REL_PARTIAL, 3);
+        testRunner.clearTransferState();
+
+        this.sendToSocket(new InetSocketAddress(9999), "H\r");
+        Thread.sleep(200);
         testRunner.assertAllFlowFilesTransferred(GetTCP.REL_SUCCESS, 1);
-        List<MockFlowFile> files = testRunner.getFlowFilesForRelationship(GetTCP.REL_SUCCESS);
-        assertNotNull(files);
-        assertTrue(1 == files.size());
         testRunner.clearTransferState();
         testRunner.shutdown();
         server.stop();
@@ -110,7 +103,7 @@ public final class TestGetTCP {
 
     private Server setupTCPServer(int port) {
         InetSocketAddress address = new InetSocketAddress(port);
-        Server server = new Server(address, 1024);
+        Server server = new Server(address, 1024, (byte) '\r');
         server.start();
         return server;
     }

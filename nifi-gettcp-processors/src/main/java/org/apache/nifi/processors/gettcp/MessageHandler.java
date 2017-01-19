@@ -20,5 +20,5 @@ import java.net.InetSocketAddress;
 
 public interface MessageHandler {
 
-    void handle(InetSocketAddress sourceAddress, byte[] message);
+    void handle(InetSocketAddress sourceAddress, byte[] message, boolean partialMessage);
 }

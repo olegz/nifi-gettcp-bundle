@@ -54,16 +54,19 @@ abstract class AbstractSocketHandler {
 
     private final AtomicBoolean isRunning;
 
+    protected final byte endOfMessageByte;
+
     /**
      *
      * @param address
      * @param server
      */
-    public AbstractSocketHandler(InetSocketAddress address, int readingBufferSize) {
+    public AbstractSocketHandler(InetSocketAddress address, int readingBufferSize, byte endOfMessageByte) {
         this.address = address;
         this.listenerTask = new ListenerTask();
         this.readingBuffer = ByteBuffer.allocate(readingBufferSize);
         this.isRunning = new AtomicBoolean();
+        this.endOfMessageByte = endOfMessageByte;
     }
 
     /**
@@ -217,32 +220,38 @@ abstract class AbstractSocketHandler {
          * the end of the road where message is processed.
          */
         private void read(SelectionKey selectionKey) throws IOException {
-            AbstractSocketHandler.this.readingBuffer.clear();
             SocketChannel socketChannel = (SocketChannel) selectionKey.channel();
+
             int count = -1;
-            try {
-                while ((count = socketChannel.read(AbstractSocketHandler.this.readingBuffer)) > 0) {
-                    AbstractSocketHandler.this.readingBuffer.flip();
-                    byte[] message = new byte[AbstractSocketHandler.this.readingBuffer.limit()];
-                    AbstractSocketHandler.this.readingBuffer.get(message);
-                    AbstractSocketHandler.this.processData(selectionKey, ByteBuffer.wrap(message));
-                    AbstractSocketHandler.this.readingBuffer.rewind();
-                }
-            } catch (IOException e) {
-                logger.warn("Detected failure while in the read loop ", e);
-                selectionKey.cancel();
-                socketChannel.close();
-                if (count == -1 && logger.isInfoEnabled()) {
-                    logger.info("Connection closed by: " + socketChannel.socket());
+            boolean finished = false;
+            while (!finished && (count = socketChannel.read(AbstractSocketHandler.this.readingBuffer)) > 0){
+                byte lastByte = AbstractSocketHandler.this.readingBuffer.get(AbstractSocketHandler.this.readingBuffer.position() - 1);
+                if (AbstractSocketHandler.this.readingBuffer.remaining() == 0 || lastByte == AbstractSocketHandler.this.endOfMessageByte) {
+                    this.processBuffer(selectionKey);
+                    if (lastByte == AbstractSocketHandler.this.endOfMessageByte) {
+                        finished = true;
+                    }
                 }
             }
+
             if (count == -1) {
+                if (AbstractSocketHandler.this.readingBuffer.position() > 0) {// flush remainder, since nothing else is coming
+                    this.processBuffer(selectionKey);
+                }
                 selectionKey.cancel();
                 socketChannel.close();
                 if (logger.isInfoEnabled()) {
                     logger.info("Connection closed by: " + socketChannel.socket());
                 }
             }
+        }
+
+        private void processBuffer(SelectionKey selectionKey) throws IOException {
+            AbstractSocketHandler.this.readingBuffer.flip();
+            byte[] message = new byte[AbstractSocketHandler.this.readingBuffer.limit()];
+            AbstractSocketHandler.this.readingBuffer.get(message);
+            AbstractSocketHandler.this.processData(selectionKey, ByteBuffer.wrap(message));
+            AbstractSocketHandler.this.readingBuffer.clear();
         }
     }
 }

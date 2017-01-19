@@ -29,7 +29,7 @@ public class Server extends AbstractSocketHandler {
 
     public static void main(String[] args) throws Exception {
         InetSocketAddress address = new InetSocketAddress(9999);
-        Server server = new Server(address, 4096);
+        Server server = new Server(address, 4096, (byte) '\r');
         server.start();
         System.in.read();
     }
@@ -39,8 +39,8 @@ public class Server extends AbstractSocketHandler {
      * @param address
      * @param readingBufferSize
      */
-    public Server(InetSocketAddress address, int readingBufferSize) {
-        super(address, readingBufferSize);
+    public Server(InetSocketAddress address, int readingBufferSize, byte endOfMessageByte) {
+        super(address, readingBufferSize, endOfMessageByte);
     }
 
     /**

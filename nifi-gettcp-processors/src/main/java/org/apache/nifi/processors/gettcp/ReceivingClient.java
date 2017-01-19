@@ -21,7 +21,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -44,12 +43,8 @@ public class ReceivingClient extends AbstractSocketHandler {
 
     private volatile InetSocketAddress connectedAddress;
 
-    public ReceivingClient(InetSocketAddress address, int readingBufferSize) {
-        this(address, Executors.newScheduledThreadPool(1), readingBufferSize);
-    }
-
-    public ReceivingClient(InetSocketAddress address, ScheduledExecutorService connectionScheduler, int readingBufferSize) {
-        super(address, readingBufferSize);
+    public ReceivingClient(InetSocketAddress address, ScheduledExecutorService connectionScheduler, int readingBufferSize, byte endOfMessageByte) {
+        super(address, readingBufferSize, endOfMessageByte);
         this.connectionScheduler = connectionScheduler;
     }
 
@@ -150,8 +145,22 @@ public class ReceivingClient extends AbstractSocketHandler {
         byte[] message = new byte[messageBuffer.limit()];
         logger.debug("Received message(size=" + message.length + ")");
         messageBuffer.get(message);
+        byte lastByteValue = message[message.length - 1];
+        boolean partialMessage = false;
+        if (lastByteValue != this.endOfMessageByte) {
+            partialMessage = true;
+            selectionKey.attach(1);
+        } else {
+            Integer wasLastPartial = (Integer) selectionKey.attachment();
+            if (wasLastPartial != null) {
+                if (wasLastPartial.intValue() == 1) {
+                    partialMessage = true;
+                    selectionKey.attach(0);
+                }
+            }
+        }
         if (this.messageHandler != null) {
-            this.messageHandler.handle(this.connectedAddress, message);
+            this.messageHandler.handle(this.connectedAddress, message, partialMessage);
         }
     }
 }

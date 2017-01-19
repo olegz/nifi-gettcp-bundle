@@ -14,13 +14,14 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 public class ReceivingClientTest {
+
+    private final static byte EOM = '\r';
 
     private ScheduledExecutorService scheduler;
 
@@ -35,21 +36,24 @@ public class ReceivingClientTest {
     }
 
     @Test
-    public void validateSuccessfullConnectionAndCommunicationToMain() throws Exception {
-        String msgToSend = "Hello from validateSuccessfullConnectionAndCommunicationToMain";
+    public void validateSuccessfullConnectionAndCommunication() throws Exception {
+        String msgToSend = "Hello from validateSuccessfullConnectionAndCommunication";
         InetSocketAddress address = new InetSocketAddress(9999);
-        Server server = new Server(address, 1024);
+        Server server = new Server(address, 1024, EOM);
         server.start();
 
-        ReceivingClient client = new ReceivingClient(address, this.scheduler, 1024);
-        AtomicReference<String> receivedMessage = new AtomicReference<String>();
-        client.setMessageHandler((fromAddress, message) -> receivedMessage.set(new String(message, StandardCharsets.UTF_8)));
+        ReceivingClient client = new ReceivingClient(address, this.scheduler, 1024, EOM);
+        StringBuilder stringBuilder = new StringBuilder();
+        client.setMessageHandler((fromAddress, message, partialMessage) -> stringBuilder.append(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
         this.sendToSocket(address, msgToSend);
         Thread.sleep(200);
-        assertEquals(msgToSend, receivedMessage.get());
+        assertEquals("", stringBuilder.toString());
+        this.sendToSocket(address, "\r");
+        Thread.sleep(200);
+        assertEquals(msgToSend + "\r", stringBuilder.toString());
 
         client.stop();
         server.stop();
@@ -58,28 +62,23 @@ public class ReceivingClientTest {
     }
 
     @Test
-    public void validateMessagesWithSomeBiggerThenBuffer() throws Exception {
-        String msgToSend = "Hello from validateMessageBiggerThenBuffer";
+    public void validateSuccessfullConnectionAndCommunicationWithClientBufferSmallerThenMessage() throws Exception {
+        String msgToSend = "Hello from validateSuccessfullConnectionAndCommunicationWithClientBufferSmallerThenMessage";
         InetSocketAddress address = new InetSocketAddress(9999);
-        Server server = new Server(address, 30);
+        Server server = new Server(address, 1024, EOM);
         server.start();
 
-        ReceivingClient client = new ReceivingClient(address, this.scheduler, 30);
+        ReceivingClient client = new ReceivingClient(address, this.scheduler, 64, EOM);
         List<String> messages = new ArrayList<>();
-        client.setMessageHandler((fromAddress, message) -> messages.add(new String(message, StandardCharsets.UTF_8)));
+        client.setMessageHandler((fromAddress, message, partialMessage) -> messages.add(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
         this.sendToSocket(address, msgToSend);
-        Thread.sleep(10);
-        this.sendToSocket(address, "Hello blah blah");
-        Thread.sleep(10);
-        this.sendToSocket(address, "foo bar");
-
+        this.sendToSocket(address, "\r");
         Thread.sleep(200);
-        assertEquals(4, messages.size());
-        assertEquals("Hello from validateMessageBigg", messages.get(0));
-        assertEquals("erThenBuffer", messages.get(1));
+        assertEquals("Hello from validateSuccessfullConnectionAndCommunicationWithClie", messages.get(0));
+        assertEquals("ntBufferSmallerThenMessage\r", messages.get(1));
 
         client.stop();
         server.stop();
@@ -87,18 +86,17 @@ public class ReceivingClientTest {
         assertFalse(server.isRunning());
     }
 
-
     @Test
-    public void validateMessageSendBeforeAfterClientConnectDisconnect() throws Exception {
-        String msgToSend = "Hello from validateMessageSendAfterClientDisconnect";
+    public void validateMessageSendBeforeAfterClientConnectDisconnectNoEndOfMessageByte() throws Exception {
+        String msgToSend = "Hello from validateMessageSendBeforeAfterClientConnectDisconnectNoEndOfMessageByte";
         InetSocketAddress address = new InetSocketAddress(9999);
-        Server server = new Server(address, 30);
+        Server server = new Server(address, 1024, EOM);
         server.start();
         this.sendToSocket(address, "foo"); // validates no unexpected errors
 
-        ReceivingClient client = new ReceivingClient(address, this.scheduler, 30);
+        ReceivingClient client = new ReceivingClient(address, this.scheduler, 30, EOM);
         List<String> messages = new ArrayList<>();
-        client.setMessageHandler((fromAddress, message) -> messages.add(new String(message, StandardCharsets.UTF_8)));
+        client.setMessageHandler((fromAddress, message, partialMessage) -> messages.add(new String(message, StandardCharsets.UTF_8)));
         client.start();
         assertTrue(client.isRunning());
 
@@ -106,7 +104,7 @@ public class ReceivingClientTest {
         Thread.sleep(200);
         assertEquals(2, messages.size());
         assertEquals("Hello from validateMessageSend", messages.get(0));
-        assertEquals("AfterClientDisconnect", messages.get(1));
+        assertEquals("BeforeAfterClientConnectDiscon", messages.get(1));
         messages.clear();
 
         client.stop();
@@ -122,46 +120,19 @@ public class ReceivingClientTest {
     }
 
     @Test
-    public void validateSuccessfullConnectionAndCommunicationToSecondary() throws Exception {
-        String msgToSend = "Hello from validateSuccessfullConnectionAndCommunicationToSecondary";
-        InetSocketAddress addressMain = new InetSocketAddress(9998);
-        InetSocketAddress addressSecondary = new InetSocketAddress(9999);
-        Server server = new Server(addressSecondary, 1024);
-        server.start();
-
-        ReceivingClient client = new ReceivingClient(addressMain, this.scheduler, 1024);
-        client.setBackupAddress(addressSecondary);
-        client.setReconnectAttempts(5);
-        client.setDelayMillisBeforeReconnect(200);
-        AtomicReference<String> receivedMessage = new AtomicReference<String>();
-        client.setMessageHandler((fromAddress, message) -> receivedMessage.set(new String(message, StandardCharsets.UTF_8)));
-        client.start();
-        assertTrue(client.isRunning());
-
-        this.sendToSocket(addressSecondary, msgToSend);
-        Thread.sleep(200);
-        assertEquals(msgToSend, receivedMessage.get());
-
-        client.stop();
-        server.stop();
-        assertFalse(client.isRunning());
-        assertFalse(server.isRunning());
-    }
-
-    @Test
     public void validateReconnectDuringReceive() throws Exception {
-        String msgToSend = "Hello from validateReconnectDuringReceive";
+        String msgToSend = "Hello from validateReconnectDuringReceive\r";
         InetSocketAddress addressMain = new InetSocketAddress(9998);
-        Server server = new Server(addressMain, 1024);
+        Server server = new Server(addressMain, 1024, EOM);
         server.start();
 
         ExecutorService sendingExecutor = Executors.newSingleThreadExecutor();
 
-        ReceivingClient client = new ReceivingClient(addressMain, this.scheduler, 1024);
+        ReceivingClient client = new ReceivingClient(addressMain, this.scheduler, 1024, EOM);
         client.setBackupAddress(addressMain);
         client.setReconnectAttempts(10);
         client.setDelayMillisBeforeReconnect(1000);
-        client.setMessageHandler((fromAddress, message) -> System.out.println(new String(message)));
+        client.setMessageHandler((fromAddress, message, partialMessage) -> System.out.println(new String(message)));
         client.start();
         assertTrue(client.isRunning());
 
@@ -206,7 +177,7 @@ public class ReceivingClientTest {
             InetSocketAddress addressMain = new InetSocketAddress(9998);
             InetSocketAddress addressSecondary = new InetSocketAddress(9999);
 
-            client = new ReceivingClient(addressMain, this.scheduler, 1024);
+            client = new ReceivingClient(addressMain, this.scheduler, 1024, EOM);
             client.setBackupAddress(addressSecondary);
             client.setReconnectAttempts(5);
             client.setDelayMillisBeforeReconnect(200);
